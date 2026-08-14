@@ -1,0 +1,24 @@
+appId: com.atloops.asap.secureclient
+productName: AT Loops Secure Exam
+directories:
+  output: dist-build
+files:
+  - dist/**/*
+  - package.json
+  - metadata.json
+win:
+  target: nsis
+  publisherName: "AT Loops Ltd."
+  # Read signing certificate from environment variables CSC_LINK / CSC_KEY_PASSWORD
+  # or local fallback if specified in environment configurations
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: "AT Loops Secure Exam"
+  deleteAppDataOnUninstall: true
+publish:
+  provider: generic
+  url: "https://updates.atloops.com/asap/${channel}"

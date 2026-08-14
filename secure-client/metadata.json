@@ -1,0 +1,7 @@
+{
+  "build_number": "1.0.0.1",
+  "git_commit": "main-a1b2c3d4",
+  "build_date": "2026-07-23",
+  "electron_version": "28.2.0",
+  "backend_api_version": "v1"
+}

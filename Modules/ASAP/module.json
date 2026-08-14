@@ -1,0 +1,11 @@
+{
+    "name": "ASAP",
+    "alias": "asap",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\ASAP\\Providers\\ASAPServiceProvider"
+    ],
+    "files": []
+}

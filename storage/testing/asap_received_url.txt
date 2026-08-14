@@ -1,0 +1,1 @@
+asap://open/?url=http%3A%2F%2F127.0.0.1%3A8001%2Fstudent%2Fexam-attempts%2F7%2Ftake&bootstrapToken=eyJraWQiOjIsInNpZCI6ImM1ZDI2YzlkLTg1YzMtNDRiYi1hODBlLThmNTNhMGRlOTBkMiIsImFpZCI6NywiZXhwIjoxNzg2NDUyMjIwfQ%3D%3D.2e437b0e36170487b2961e880cbca183fdbdf8fc181e1fa2536c22d6dcbce838&attempt=7&signature=4c84368ab7d9151af9bf3b211fbbd4eab0c8740cf20ea7409fc0c9efbe7ec95f

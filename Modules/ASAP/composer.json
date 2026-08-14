@@ -1,0 +1,30 @@
+{
+    "name": "nwidart/asap",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\ASAP\\": "app/",
+            "Modules\\ASAP\\Database\\Factories\\": "database/factories/",
+            "Modules\\ASAP\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\ASAP\\Tests\\": "tests/"
+        }
+    }
+}
