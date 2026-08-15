@@ -3,6 +3,7 @@
 # ==============================================================================
 # Production Server Installer for Osoul Academy (Mentor LMS)
 # Automated, idempotent, secure installation for Ubuntu & Debian Linux servers
+# Supported: Ubuntu 22.04 LTS, Ubuntu 24.04 LTS, Ubuntu 26.04 LTS, Debian 11, Debian 12
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -156,7 +157,7 @@ fi
 
 INSTALL_DIR="/var/www/osoul-academy"
 REPO_URL="https://github.com/MohamedFahmyy/osoul-academy-new.git"
-PHP_REQUIRED_VER="8.3"
+MIN_PHP_VER="8.3.0"
 
 # Safe Summary (Never prints DB password or sensitive secrets)
 echo -e "${GREEN}Configuration Summary:${NC}"
@@ -184,31 +185,43 @@ OS_ID="${ID:-}"
 OS_VERSION_ID="${VERSION_ID:-}"
 OS_CODENAME="${VERSION_CODENAME:-}"
 
-echo "Detected OS: ${NAME:-Linux} ${VERSION_ID:-} (${OS_CODENAME})"
-
 SUPPORTED=false
+OS_PRETTY=""
+
 if [ "$OS_ID" = "ubuntu" ]; then
-    if [[ "$OS_VERSION_ID" == "22.04"* ]] || [[ "$OS_VERSION_ID" == "24.04"* ]]; then
+    if [[ "$OS_VERSION_ID" == "22.04"* ]]; then
         SUPPORTED=true
+        OS_PRETTY="Ubuntu 22.04 LTS (${OS_CODENAME:-jammy})"
+    elif [[ "$OS_VERSION_ID" == "24.04"* ]]; then
+        SUPPORTED=true
+        OS_PRETTY="Ubuntu 24.04 LTS (${OS_CODENAME:-noble})"
+    elif [[ "$OS_VERSION_ID" == "26.04"* ]]; then
+        SUPPORTED=true
+        OS_PRETTY="Ubuntu 26.04 LTS (${OS_CODENAME:-resolute})"
     fi
 elif [ "$OS_ID" = "debian" ]; then
-    if [[ "$OS_VERSION_ID" == "11"* ]] || [[ "$OS_VERSION_ID" == "12"* ]]; then
+    if [[ "$OS_VERSION_ID" == "11"* ]]; then
         SUPPORTED=true
+        OS_PRETTY="Debian 11 (${OS_CODENAME:-bullseye})"
+    elif [[ "$OS_VERSION_ID" == "12"* ]]; then
+        SUPPORTED=true
+        OS_PRETTY="Debian 12 (${OS_CODENAME:-bookworm})"
     fi
 fi
 
 if [ "$SUPPORTED" = false ]; then
     echo -e "${RED}❌ Unsupported operating system.${NC}"
-    echo -e "Detected:  ${OS_ID} ${OS_VERSION_ID}"
-    echo -e "Supported: Ubuntu 22.04 / 24.04 LTS, Debian 11 / 12"
+    echo -e "Detected:  ${OS_ID} ${OS_VERSION_ID} (${OS_CODENAME:-unknown})"
+    echo -e "Supported: Ubuntu 22.04 / 24.04 / 26.04 LTS, Debian 11 / 12"
     exit 1
 fi
-echo -e "${GREEN}✓ OS check passed.${NC}"
+
+echo -e "${GREEN}✓ Supported OS: ${OS_PRETTY}${NC}"
 
 # ------------------------------------------------------------------------------
 # Step 3: Package Repositories & Dependencies Installation
 # ------------------------------------------------------------------------------
-log_step 3 "Installing System Dependencies & PHP ${PHP_REQUIRED_VER}"
+log_step 3 "Installing System Dependencies & PHP"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -218,7 +231,7 @@ apt-get install -y --no-install-recommends \
 
 # Configure PHP Repository based on OS
 if [ "$OS_ID" = "ubuntu" ]; then
-    add-apt-repository -y ppa:ondrej/php
+    add-apt-repository -y ppa:ondrej/php || true
     apt-get update -y
 elif [ "$OS_ID" = "debian" ]; then
     curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
@@ -226,21 +239,40 @@ elif [ "$OS_ID" = "debian" ]; then
     apt-get update -y
 fi
 
-# Install PHP 8.3 & Required Laravel Extensions
+# Install PHP packages (Prefer PHP 8.3 packages; fallback to standard php-fpm if >= 8.3)
+if apt-cache show php8.3-fpm &>/dev/null; then
+    PHP_PKG_PREFIX="php8.3"
+elif apt-cache show php-fpm &>/dev/null; then
+    PHP_PKG_PREFIX="php"
+else
+    PHP_PKG_PREFIX="php8.3"
+fi
+
+echo "Installing PHP packages (${PHP_PKG_PREFIX})..."
 apt-get install -y \
-    "php${PHP_REQUIRED_VER}" \
-    "php${PHP_REQUIRED_VER}-fpm" \
-    "php${PHP_REQUIRED_VER}-cli" \
-    "php${PHP_REQUIRED_VER}-mysql" \
-    "php${PHP_REQUIRED_VER}-mbstring" \
-    "php${PHP_REQUIRED_VER}-xml" \
-    "php${PHP_REQUIRED_VER}-bcmath" \
-    "php${PHP_REQUIRED_VER}-curl" \
-    "php${PHP_REQUIRED_VER}-zip" \
-    "php${PHP_REQUIRED_VER}-gd" \
-    "php${PHP_REQUIRED_VER}-intl" \
-    "php${PHP_REQUIRED_VER}-tokenizer" \
-    "php${PHP_REQUIRED_VER}-soap"
+    "${PHP_PKG_PREFIX}" \
+    "${PHP_PKG_PREFIX}-fpm" \
+    "${PHP_PKG_PREFIX}-cli" \
+    "${PHP_PKG_PREFIX}-mysql" \
+    "${PHP_PKG_PREFIX}-mbstring" \
+    "${PHP_PKG_PREFIX}-xml" \
+    "${PHP_PKG_PREFIX}-bcmath" \
+    "${PHP_PKG_PREFIX}-curl" \
+    "${PHP_PKG_PREFIX}-zip" \
+    "${PHP_PKG_PREFIX}-gd" \
+    "${PHP_PKG_PREFIX}-intl" \
+    "${PHP_PKG_PREFIX}-tokenizer" \
+    "${PHP_PKG_PREFIX}-soap"
+
+# Verify installed PHP version satisfies Laravel 13 requirement (>= 8.3)
+INSTALLED_PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+echo "Detected Installed PHP Version: ${INSTALLED_PHP_VER}"
+
+if ! php -r 'exit(version_compare(PHP_VERSION, "8.3.0", ">=") ? 0 : 1);'; then
+    echo -e "${RED}❌ Error: Laravel requires PHP >= 8.3.0, but installed version is ${INSTALLED_PHP_VER}.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ PHP version ${INSTALLED_PHP_VER} satisfies application requirements.${NC}"
 
 # Install Composer
 if ! command -v composer &> /dev/null; then
@@ -250,19 +282,27 @@ fi
 
 # Install Node.js 20.x and NPM
 if ! command -v node &> /dev/null; then
-    echo "Installing Node.js 20.x..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
+    echo "Installing Node.js..."
+    if curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; then
+        apt-get install -y nodejs || true
+    fi
+    if ! command -v node &> /dev/null; then
+        echo "Falling back to system Node.js and NPM packages..."
+        apt-get install -y nodejs npm
+    fi
 fi
 
 # Install Nginx, MySQL Server, Certbot
 apt-get install -y nginx mysql-server certbot python3-certbot-nginx
 
-# Determine installed PHP version and PHP-FPM service
-INSTALLED_PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+# Determine actual PHP-FPM service name
 PHP_FPM_SERVICE="php${INSTALLED_PHP_VER}-fpm"
+if ! systemctl list-unit-files | grep -qE "^${PHP_FPM_SERVICE}\.service"; then
+    if systemctl list-unit-files | grep -qE "^php-fpm\.service"; then
+        PHP_FPM_SERVICE="php-fpm"
+    fi
+fi
 
-echo "Detected PHP Version: ${INSTALLED_PHP_VER}"
 echo "Detected PHP-FPM Service: ${PHP_FPM_SERVICE}"
 
 systemctl enable --now nginx
@@ -411,6 +451,10 @@ if [ -S "/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
     PHP_FPM_SOCK="unix:/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
 elif [ -S "/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
     PHP_FPM_SOCK="unix:/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
+elif [ -S "/var/run/php/php-fpm.sock" ]; then
+    PHP_FPM_SOCK="unix:/var/run/php/php-fpm.sock"
+elif [ -S "/run/php/php-fpm.sock" ]; then
+    PHP_FPM_SOCK="unix:/run/php/php-fpm.sock"
 else
     PHP_FPM_SOCK="unix:/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
 fi
