@@ -414,6 +414,7 @@ echo -e "${GREEN}✓ .env configured securely (permissions 600).${NC}"
 # ------------------------------------------------------------------------------
 log_step 7 "Installing Composer Dependencies (Production Mode)"
 
+export COMPOSER_ALLOW_SUPERUSER=1
 composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
 if ! grep -qE '^APP_KEY=base64:.+' .env; then

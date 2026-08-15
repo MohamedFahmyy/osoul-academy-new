@@ -43,7 +43,40 @@
         "psr-4": {
             "App\\": "app/",
             "Database\\Factories\\": "database/factories/",
-            "Database\\Seeders\\": "database/seeders/"
+            "Database\\Seeders\\": "database/seeders/",
+            "Modules\\ASAP\\": "Modules/ASAP/app/",
+            "Modules\\ASAP\\Database\\Factories\\": "Modules/ASAP/database/factories/",
+            "Modules\\ASAP\\Database\\Seeders\\": "Modules/ASAP/database/seeders/",
+            "Modules\\Billing\\": "Modules/Billing/app/",
+            "Modules\\Billing\\Database\\Factories\\": "Modules/Billing/database/factories/",
+            "Modules\\Billing\\Database\\Seeders\\": "Modules/Billing/database/seeders/",
+            "Modules\\Blog\\": "Modules/Blog/app/",
+            "Modules\\Blog\\Database\\Factories\\": "Modules/Blog/database/factories/",
+            "Modules\\Blog\\Database\\Seeders\\": "Modules/Blog/database/seeders/",
+            "Modules\\Certification\\": "Modules/Certification/app/",
+            "Modules\\Certification\\Database\\Factories\\": "Modules/Certification/database/factories/",
+            "Modules\\Certification\\Database\\Seeders\\": "Modules/Certification/database/seeders/",
+            "Modules\\Course\\": "Modules/Course/app/",
+            "Modules\\Course\\Database\\Factories\\": "Modules/Course/database/factories/",
+            "Modules\\Course\\Database\\Seeders\\": "Modules/Course/database/seeders/",
+            "Modules\\Exam\\": "Modules/Exam/app/",
+            "Modules\\Exam\\Database\\Factories\\": "Modules/Exam/database/factories/",
+            "Modules\\Exam\\Database\\Seeders\\": "Modules/Exam/database/seeders/",
+            "Modules\\Frontend\\": "Modules/Frontend/app/",
+            "Modules\\Frontend\\Database\\Factories\\": "Modules/Frontend/database/factories/",
+            "Modules\\Frontend\\Database\\Seeders\\": "Modules/Frontend/database/seeders/",
+            "Modules\\Installer\\": "Modules/Installer/app/",
+            "Modules\\Installer\\Database\\Factories\\": "Modules/Installer/database/factories/",
+            "Modules\\Installer\\Database\\Seeders\\": "Modules/Installer/database/seeders/",
+            "Modules\\Language\\": "Modules/Language/app/",
+            "Modules\\Language\\Database\\Factories\\": "Modules/Language/database/factories/",
+            "Modules\\Language\\Database\\Seeders\\": "Modules/Language/database/seeders/",
+            "Modules\\Maintenance\\": "Modules/Maintenance/app/",
+            "Modules\\Maintenance\\Database\\Factories\\": "Modules/Maintenance/database/factories/",
+            "Modules\\Maintenance\\Database\\Seeders\\": "Modules/Maintenance/database/seeders/",
+            "Modules\\Monitoring\\": "Modules/Monitoring/app/",
+            "Modules\\Monitoring\\Database\\Factories\\": "Modules/Monitoring/database/factories/",
+            "Modules\\Monitoring\\Database\\Seeders\\": "Modules/Monitoring/database/seeders/"
         },
         "files": [
             "app/Helpers/App.php",
@@ -121,11 +154,6 @@
     "extra": {
         "laravel": {
             "dont-discover": []
-        },
-        "merge-plugin": {
-            "include": [
-                "Modules/*/composer.json"
-            ]
         }
     },
     "config": {
@@ -134,8 +162,7 @@
         "sort-packages": true,
         "allow-plugins": {
             "pestphp/pest-plugin": true,
-            "php-http/discovery": true,
-            "wikimedia/composer-merge-plugin": true
+            "php-http/discovery": true
         }
     },
     "minimum-stability": "stable"

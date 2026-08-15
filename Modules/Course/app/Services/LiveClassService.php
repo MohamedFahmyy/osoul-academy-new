@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\LiveClass;
+namespace Modules\Course\Services;
 
 use Modules\Course\Models\CourseLiveClass;
 
