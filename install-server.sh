@@ -34,7 +34,7 @@ error_handler() {
     echo -e "${YELLOW}Failed Step:${NC}    ${CURRENT_STEP}"
     echo -e "${YELLOW}Line Number:${NC}    ${line_no}"
     echo -e "${YELLOW}Exit Code:${NC}      ${exit_code}"
-    # Mask any password-like strings from command in error output
+    # Mask any password-like parameters in error output
     local sanitized_cmd
     sanitized_cmd=$(echo "$last_command" | sed -E 's/(password|DB_PASS|pass)=[^ ]+/\1=***/gI')
     echo -e "${YELLOW}Failed Command:${NC} ${sanitized_cmd}"
@@ -69,21 +69,20 @@ log_step() {
     echo -e "${CYAN}==============================================================================${NC}"
 }
 
-# Safely update or append a key=value in a .env file
 set_env_value() {
     local env_file="$1"
     local key="$2"
     local value="$3"
 
     if grep -qE "^${key}=" "$env_file"; then
-        # Use awk or python/php to avoid sed regex delimiter collisions
         php -r "
             \$file = '${env_file}';
             \$key = '${key}';
             \$val = '${value}';
             \$content = file_get_contents(\$file);
             \$pattern = '/^' . preg_quote(\$key, '/') . '=.*/m';
-            \$replacement = \$key . '=' . (strpbrk(\$val, ' #\"\'') !== false ? '\"' . str_replace('\"', '\\\"', \$val) . '\"' : \$val);
+            \$escaped_val = (strpbrk(\$val, ' #\"\'') !== false) ? '\"' . addcslashes(\$val, '\"') . '\"' : \$val;
+            \$replacement = \$key . '=' . \$escaped_val;
             if (preg_match(\$pattern, \$content)) {
                 \$content = preg_replace(\$pattern, \$replacement, \$content, 1);
             } else {
@@ -101,13 +100,11 @@ set_env_value() {
 # ------------------------------------------------------------------------------
 log_step 1 "Configuration & Input Validation"
 
-# Validation Regex Patterns
 HOSTNAME_REGEX='^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
 MYSQL_IDENTIFIER_REGEX='^[a-zA-Z0-9_]{1,64}$'
 
 # 1.1 DOMAIN_NAME Validation
 RAW_DOMAIN="${DOMAIN_NAME:-}"
-# Normalize domain (remove http://, https://, trailing slashes, path parts, whitespace)
 CLEAN_DOMAIN=$(echo "$RAW_DOMAIN" | sed -e 's|^https\?://||i' -e 's|/.*$||' -e 's|[[:space:]]||g' | tr -d '\r\n')
 
 if [ -n "$CLEAN_DOMAIN" ] && [[ "$CLEAN_DOMAIN" =~ $HOSTNAME_REGEX ]] && [[ ! "$CLEAN_DOMAIN" =~ [\$\{\}\=\;] ]]; then
@@ -146,7 +143,6 @@ RAW_DB_PASS="${DB_PASS:-}"
 if [ -n "$RAW_DB_PASS" ] && [[ ! "$RAW_DB_PASS" =~ [\$\{\}\;\'\"\`\\] ]] && [ ${#RAW_DB_PASS} -ge 8 ]; then
     DB_PASS="$RAW_DB_PASS"
 else
-    # Generate cryptographically secure random hexadecimal password
     DB_PASS=$(openssl rand -hex 24)
 fi
 
@@ -162,29 +158,15 @@ INSTALL_DIR="/var/www/osoul-academy"
 REPO_URL="https://github.com/MohamedFahmyy/osoul-academy-new.git"
 PHP_REQUIRED_VER="8.3"
 
-# 1.6 Admin User Setup
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@osoul-academy.com}"
-if [[ ! "$ADMIN_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-    ADMIN_EMAIL="admin@osoul-academy.com"
-fi
-
-RAW_ADMIN_PASS="${ADMIN_PASS:-}"
-if [ -n "$RAW_ADMIN_PASS" ] && [[ ! "$RAW_ADMIN_PASS" =~ [\$\{\}\;\'\"\`\\] ]] && [ ${#RAW_ADMIN_PASS} -ge 8 ]; then
-    ADMIN_PASS="$RAW_ADMIN_PASS"
-else
-    ADMIN_PASS=$(openssl rand -hex 12)
-fi
-
-# Display Sanitized Safe Summary (NEVER PRINT DATABASE PASSWORD)
+# Safe Summary (Never prints DB password or sensitive secrets)
 echo -e "${GREEN}Configuration Summary:${NC}"
 echo "----------------------------------------------------"
 echo "Domain:          ${DOMAIN_NAME}"
 echo "Install Dir:     ${INSTALL_DIR}"
 echo "Database:        ${DB_NAME}"
 echo "DB User:         ${DB_USER}"
-echo "DB Password:     ******** (will be stored in .env)"
+echo "DB Password:     ******** (stored securely in .env)"
 echo "App Name:        ${APP_NAME_VAL}"
-echo "Admin Email:     ${ADMIN_EMAIL}"
 echo "----------------------------------------------------"
 
 # ------------------------------------------------------------------------------
@@ -276,14 +258,13 @@ fi
 # Install Nginx, MySQL Server, Certbot
 apt-get install -y nginx mysql-server certbot python3-certbot-nginx
 
-# Determine actual installed PHP version and PHP-FPM service name
+# Determine installed PHP version and PHP-FPM service
 INSTALLED_PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
 PHP_FPM_SERVICE="php${INSTALLED_PHP_VER}-fpm"
 
 echo "Detected PHP Version: ${INSTALLED_PHP_VER}"
 echo "Detected PHP-FPM Service: ${PHP_FPM_SERVICE}"
 
-# Enable and start core services
 systemctl enable --now nginx
 systemctl enable --now mysql
 systemctl enable --now "$PHP_FPM_SERVICE"
@@ -293,7 +274,6 @@ systemctl enable --now "$PHP_FPM_SERVICE"
 # ------------------------------------------------------------------------------
 log_step 4 "Setting up MySQL Database and User"
 
-# Idempotently create database and user using safe heredoc
 mysql -u root <<EOF
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
@@ -384,36 +364,10 @@ log_step 9 "Running Database Migrations & Initial Seeders"
 php artisan migrate --force
 php artisan db:seed --force
 
-# Ensure public installed flag file exists for Installer module middleware
 mkdir -p storage/app/public
 touch storage/app/public/installed
 
-# Create or Update Administrator Account
-php artisan tinker --execute="
-    \$admin = \App\Models\User::updateOrCreate(
-        ['email' => '${ADMIN_EMAIL}'],
-        [
-            'name' => 'Administrator',
-            'role' => 'admin',
-            'status' => 1,
-            'password' => \Illuminate\Support\Facades\Hash::make('${ADMIN_PASS}'),
-            'email_verified_at' => now(),
-        ]
-    );
-    \$instructor = \App\Models\Instructor::updateOrCreate(
-        ['user_id' => \$admin->id],
-        [
-            'status' => 'approved',
-            'designation' => 'Administrator',
-            'skills' => json_encode(['admin']),
-            'biography' => 'Platform Administrator',
-        ]
-    );
-    \$admin->instructor_id = \$instructor->id;
-    \$admin->save();
-"
-
-echo -e "${GREEN}✓ Migrations, seeders, and Admin account initialized.${NC}"
+echo -e "${GREEN}✓ Database migrations and core seeders completed.${NC}"
 
 # ------------------------------------------------------------------------------
 # Step 10: Permissions & Storage Symlink
@@ -422,7 +376,6 @@ log_step 10 "Configuring Permissions and Storage Symlink"
 
 php artisan storage:link || true
 
-# Sane permission model: files 644, directories 755, storage/bootstrap writable by www-data
 DEPLOY_USER="${SUDO_USER:-root}"
 chown -R "${DEPLOY_USER}:www-data" "$INSTALL_DIR"
 
@@ -453,7 +406,6 @@ php artisan event:cache
 # ------------------------------------------------------------------------------
 log_step 12 "Configuring Nginx"
 
-# Resolve PHP-FPM socket path dynamically
 PHP_FPM_SOCK=""
 if [ -S "/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
     PHP_FPM_SOCK="unix:/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
@@ -502,7 +454,6 @@ server {
         fastcgi_read_timeout 300;
     }
 
-    # Deny access to sensitive files and hidden files
     location ~ /\.(?!well-known).* {
         deny all;
     }
@@ -531,14 +482,13 @@ if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     ufw allow 443/tcp || true
 fi
 
-# Check DNS resolution
 SERVER_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || echo "")
 RESOLVED_IP=$(getent ahosts "$DOMAIN_NAME" | head -n 1 | awk '{print $1}' || echo "")
 
 SSL_STATUS="Pending DNS configuration"
 if [ -n "$SERVER_IP" ] && [ -n "$RESOLVED_IP" ] && [ "$SERVER_IP" = "$RESOLVED_IP" ]; then
     echo "DNS resolves to this server ($SERVER_IP). Attempting automatic SSL certificate installation..."
-    if certbot --nginx -d "$DOMAIN_NAME" -d "www.$DOMAIN_NAME" --non-interactive --agree-tos -m "$ADMIN_EMAIL" --redirect; then
+    if certbot --nginx -d "$DOMAIN_NAME" -d "www.$DOMAIN_NAME" --non-interactive --agree-tos -m "admin@${DOMAIN_NAME}" --redirect; then
         SSL_STATUS="Enabled (Let's Encrypt)"
     else
         echo -e "${YELLOW}⚠️  Certbot SSL setup encountered an issue. You can run certbot manually once DNS propagates.${NC}"
@@ -564,7 +514,6 @@ systemctl is-active --quiet nginx && echo -e "${GREEN}✓ Nginx service is runni
 systemctl is-active --quiet mysql && echo -e "${GREEN}✓ MySQL service is running.${NC}"
 systemctl is-active --quiet "$PHP_FPM_SERVICE" && echo -e "${GREEN}✓ PHP-FPM service is running.${NC}"
 
-# Test Laravel application boot
 php artisan about > /dev/null
 echo -e "${GREEN}✓ Laravel application booted successfully.${NC}"
 
@@ -582,11 +531,6 @@ echo -e "Database Password:   Stored securely in ${INSTALL_DIR}/.env (permission
 echo -e "Environment:         production"
 echo -e "Debug Mode:          disabled"
 echo -e "SSL Status:          ${SSL_STATUS}"
-echo -e "------------------------------------------------------------------------------"
-echo -e "${BOLD}🔑 Admin Login Credentials:${NC}"
-echo -e "  Login URL:         ${CYAN}https://${DOMAIN_NAME}/login${NC}"
-echo -e "  Admin Email:       ${BOLD}${ADMIN_EMAIL}${NC}"
-echo -e "  Admin Password:    ${BOLD}${ADMIN_PASS}${NC}"
 echo -e "------------------------------------------------------------------------------"
 echo -e "${YELLOW}📌 Next Steps:${NC}"
 if [ "$SSL_STATUS" != "Enabled (Let's Encrypt)" ]; then
