@@ -157,7 +157,6 @@ fi
 
 INSTALL_DIR="/var/www/osoul-academy"
 REPO_URL="https://github.com/MohamedFahmyy/osoul-academy-new.git"
-MIN_PHP_VER="8.3.0"
 
 # Safe Summary (Never prints DB password or sensitive secrets)
 echo -e "${GREEN}Configuration Summary:${NC}"
@@ -171,9 +170,9 @@ echo "App Name:        ${APP_NAME_VAL}"
 echo "----------------------------------------------------"
 
 # ------------------------------------------------------------------------------
-# Step 2: Operating System Detection
+# Step 2: Operating System Detection & Strategy Selection
 # ------------------------------------------------------------------------------
-log_step 2 "Operating System Detection"
+log_step 2 "Operating System Detection & Strategy Selection"
 
 if [ ! -f /etc/os-release ]; then
     echo -e "${RED}❌ Error: Cannot detect operating system (/etc/os-release not found).${NC}"
@@ -187,25 +186,31 @@ OS_CODENAME="${VERSION_CODENAME:-}"
 
 SUPPORTED=false
 OS_PRETTY=""
+PHP_STRATEGY=""
 
 if [ "$OS_ID" = "ubuntu" ]; then
     if [[ "$OS_VERSION_ID" == "22.04"* ]]; then
         SUPPORTED=true
         OS_PRETTY="Ubuntu 22.04 LTS (${OS_CODENAME:-jammy})"
+        PHP_STRATEGY="ppa_83"
     elif [[ "$OS_VERSION_ID" == "24.04"* ]]; then
         SUPPORTED=true
         OS_PRETTY="Ubuntu 24.04 LTS (${OS_CODENAME:-noble})"
+        PHP_STRATEGY="ppa_83"
     elif [[ "$OS_VERSION_ID" == "26.04"* ]]; then
         SUPPORTED=true
         OS_PRETTY="Ubuntu 26.04 LTS (${OS_CODENAME:-resolute})"
+        PHP_STRATEGY="ubuntu_native"
     fi
 elif [ "$OS_ID" = "debian" ]; then
     if [[ "$OS_VERSION_ID" == "11"* ]]; then
         SUPPORTED=true
         OS_PRETTY="Debian 11 (${OS_CODENAME:-bullseye})"
+        PHP_STRATEGY="sury_debian"
     elif [[ "$OS_VERSION_ID" == "12"* ]]; then
         SUPPORTED=true
         OS_PRETTY="Debian 12 (${OS_CODENAME:-bookworm})"
+        PHP_STRATEGY="sury_debian"
     fi
 fi
 
@@ -217,11 +222,12 @@ if [ "$SUPPORTED" = false ]; then
 fi
 
 echo -e "${GREEN}✓ Supported OS: ${OS_PRETTY}${NC}"
+echo -e "PHP Strategy:   ${PHP_STRATEGY}"
 
 # ------------------------------------------------------------------------------
 # Step 3: Package Repositories & Dependencies Installation
 # ------------------------------------------------------------------------------
-log_step 3 "Installing System Dependencies & PHP"
+log_step 3 "Installing System Dependencies & PHP Stack"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -229,40 +235,29 @@ apt-get install -y --no-install-recommends \
     software-properties-common curl wget git unzip zip ufw \
     lsb-release ca-certificates apt-transport-https gnupg2 dnsutils
 
-# Configure PHP Repository based on OS
-if [ "$OS_ID" = "ubuntu" ]; then
+# Configure Repositories and Install PHP according to OS strategy
+if [ "$PHP_STRATEGY" = "ubuntu_native" ]; then
+    echo "Using Ubuntu 26.04 native PHP repository..."
+    apt-get update -y
+    apt-get install -y \
+        php php-fpm php-cli php-mysql php-mbstring php-xml \
+        php-bcmath php-curl php-zip php-gd php-intl php-soap
+elif [ "$PHP_STRATEGY" = "ppa_83" ]; then
+    echo "Configuring ppa:ondrej/php for Ubuntu ${OS_VERSION_ID}..."
     add-apt-repository -y ppa:ondrej/php || true
     apt-get update -y
-elif [ "$OS_ID" = "debian" ]; then
+    apt-get install -y \
+        php8.3 php8.3-fpm php8.3-cli php8.3-mysql php8.3-mbstring php8.3-xml \
+        php8.3-bcmath php8.3-curl php8.3-zip php8.3-gd php8.3-intl php8.3-soap
+elif [ "$PHP_STRATEGY" = "sury_debian" ]; then
+    echo "Configuring packages.sury.org for Debian ${OS_VERSION_ID}..."
     curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
     echo "deb https://packages.sury.org/php/ ${OS_CODENAME} main" > /etc/apt/sources.list.d/php.list
     apt-get update -y
+    apt-get install -y \
+        php8.3 php8.3-fpm php8.3-cli php8.3-mysql php8.3-mbstring php8.3-xml \
+        php8.3-bcmath php8.3-curl php8.3-zip php8.3-gd php8.3-intl php8.3-soap
 fi
-
-# Install PHP packages (Prefer PHP 8.3 packages; fallback to standard php-fpm if >= 8.3)
-if apt-cache show php8.3-fpm &>/dev/null; then
-    PHP_PKG_PREFIX="php8.3"
-elif apt-cache show php-fpm &>/dev/null; then
-    PHP_PKG_PREFIX="php"
-else
-    PHP_PKG_PREFIX="php8.3"
-fi
-
-echo "Installing PHP packages (${PHP_PKG_PREFIX})..."
-apt-get install -y \
-    "${PHP_PKG_PREFIX}" \
-    "${PHP_PKG_PREFIX}-fpm" \
-    "${PHP_PKG_PREFIX}-cli" \
-    "${PHP_PKG_PREFIX}-mysql" \
-    "${PHP_PKG_PREFIX}-mbstring" \
-    "${PHP_PKG_PREFIX}-xml" \
-    "${PHP_PKG_PREFIX}-bcmath" \
-    "${PHP_PKG_PREFIX}-curl" \
-    "${PHP_PKG_PREFIX}-zip" \
-    "${PHP_PKG_PREFIX}-gd" \
-    "${PHP_PKG_PREFIX}-intl" \
-    "${PHP_PKG_PREFIX}-tokenizer" \
-    "${PHP_PKG_PREFIX}-soap"
 
 # Verify installed PHP version satisfies Laravel 13 requirement (>= 8.3)
 INSTALLED_PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
@@ -272,7 +267,7 @@ if ! php -r 'exit(version_compare(PHP_VERSION, "8.3.0", ">=") ? 0 : 1);'; then
     echo -e "${RED}❌ Error: Laravel requires PHP >= 8.3.0, but installed version is ${INSTALLED_PHP_VER}.${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ PHP version ${INSTALLED_PHP_VER} satisfies application requirements.${NC}"
+echo -e "${GREEN}✓ PHP version ${INSTALLED_PHP_VER} satisfies Laravel 13 requirements (>= 8.3.0).${NC}"
 
 # Install Composer
 if ! command -v composer &> /dev/null; then
@@ -280,7 +275,7 @@ if ! command -v composer &> /dev/null; then
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 fi
 
-# Install Node.js 20.x and NPM
+# Install Node.js and NPM
 if ! command -v node &> /dev/null; then
     echo "Installing Node.js..."
     if curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; then
@@ -447,17 +442,19 @@ php artisan event:cache
 log_step 12 "Configuring Nginx"
 
 PHP_FPM_SOCK=""
-if [ -S "/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
-    PHP_FPM_SOCK="unix:/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
-elif [ -S "/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
+if [ -S "/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
     PHP_FPM_SOCK="unix:/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
-elif [ -S "/var/run/php/php-fpm.sock" ]; then
-    PHP_FPM_SOCK="unix:/var/run/php/php-fpm.sock"
+elif [ -S "/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
+    PHP_FPM_SOCK="unix:/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
 elif [ -S "/run/php/php-fpm.sock" ]; then
     PHP_FPM_SOCK="unix:/run/php/php-fpm.sock"
+elif [ -S "/var/run/php/php-fpm.sock" ]; then
+    PHP_FPM_SOCK="unix:/var/run/php/php-fpm.sock"
 else
     PHP_FPM_SOCK="unix:/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
 fi
+
+echo "Using PHP-FPM Socket: ${PHP_FPM_SOCK}"
 
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN_NAME"
 
@@ -490,12 +487,16 @@ server {
 
     error_page 404 /index.php;
 
-    location ~ \.php\$ {
+    location ~ ^/index\.php(/|\$) {
         fastcgi_pass $PHP_FPM_SOCK;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
         fastcgi_hide_header X-Powered-By;
         fastcgi_read_timeout 300;
+    }
+
+    location ~ \.php\$ {
+        return 404;
     }
 
     location ~ /\.(?!well-known).* {
