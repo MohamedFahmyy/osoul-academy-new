@@ -1,170 +1,467 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# Full Automated Production Installer for Osoul Academy (Mentor LMS)
-# From bare server -> Database creation -> Git clone -> Setup -> Nginx & SSL
-# Supported OS: Ubuntu 22.04 / 24.04 LTS, Debian 11 / 12
+# Production Server Installer for Osoul Academy (Mentor LMS)
+# Automated, idempotent, secure installation for Ubuntu & Debian Linux servers
 # ==============================================================================
 
-set -e
+set -Eeuo pipefail
 
-# Colors for terminal output
+# ------------------------------------------------------------------------------
+# Formatting & Colors
+# ------------------------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}==============================================================================${NC}"
-echo -e "${BLUE}🚀 Osoul Academy - Complete Production Server Installer${NC}"
-echo -e "${BLUE}==============================================================================${NC}"
+CURRENT_STEP="Initialization"
 
-# Check if script is run as root
+# ------------------------------------------------------------------------------
+# Error Handler Trap
+# ------------------------------------------------------------------------------
+error_handler() {
+    local exit_code="$1"
+    local line_no="$2"
+    local last_command="$3"
+    
+    echo -e "\n${RED}==============================================================================${NC}"
+    echo -e "${RED}❌ Installation Failed!${NC}"
+    echo -e "${RED}==============================================================================${NC}"
+    echo -e "${YELLOW}Failed Step:${NC}    ${CURRENT_STEP}"
+    echo -e "${YELLOW}Line Number:${NC}    ${line_no}"
+    echo -e "${YELLOW}Exit Code:${NC}      ${exit_code}"
+    # Mask any password-like strings from command in error output
+    local sanitized_cmd
+    sanitized_cmd=$(echo "$last_command" | sed -E 's/(password|DB_PASS|pass)=[^ ]+/\1=***/gI')
+    echo -e "${YELLOW}Failed Command:${NC} ${sanitized_cmd}"
+    echo -e "${RED}==============================================================================${NC}"
+    echo -e "Please check the logs above for specific error details."
+    exit "$exit_code"
+}
+
+trap 'error_handler $? $LINENO "$BASH_COMMAND"' ERR
+
+# ------------------------------------------------------------------------------
+# Root Check
+# ------------------------------------------------------------------------------
 if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}❌ Please run this script as root or with sudo.${NC}"
+    echo -e "${RED}❌ Error: This script must be run as root or with sudo privileges.${NC}"
     exit 1
 fi
 
-# 1. Configuration (Domain & Database Setup)
-echo -e "\n${YELLOW}📋 Step 1: Configuration Details${NC}"
+echo -e "${BLUE}==============================================================================${NC}"
+echo -e "${BLUE}🚀 Osoul Academy - Production Server Installer${NC}"
+echo -e "${BLUE}==============================================================================${NC}"
 
-DOMAIN_NAME="${DOMAIN_NAME:-osoul-academy.com}"
-DOMAIN_NAME=$(echo "$DOMAIN_NAME" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||' -e 's|/.*$||' | tr -d ' ')
+# ------------------------------------------------------------------------------
+# Helper Functions
+# ------------------------------------------------------------------------------
+log_step() {
+    local step_num="$1"
+    local step_title="$2"
+    CURRENT_STEP="Step ${step_num}: ${step_title}"
+    echo -e "\n${CYAN}==============================================================================${NC}"
+    echo -e "${CYAN}▶ Step ${step_num}: ${step_title}${NC}"
+    echo -e "${CYAN}==============================================================================${NC}"
+}
 
-DB_NAME="${DB_NAME:-osoul_academy}"
-DB_USER="${DB_USER:-osoul_user}"
+# Safely update or append a key=value in a .env file
+set_env_value() {
+    local env_file="$1"
+    local key="$2"
+    local value="$3"
 
-# Generate random secure password if not provided
-RANDOM_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-DB_PASS="${DB_PASS:-$RANDOM_PASS}"
+    if grep -qE "^${key}=" "$env_file"; then
+        # Use awk or python/php to avoid sed regex delimiter collisions
+        php -r "
+            \$file = '${env_file}';
+            \$key = '${key}';
+            \$val = '${value}';
+            \$content = file_get_contents(\$file);
+            \$pattern = '/^' . preg_quote(\$key, '/') . '=.*/m';
+            \$replacement = \$key . '=' . (strpbrk(\$val, ' #\"\'') !== false ? '\"' . str_replace('\"', '\\\"', \$val) . '\"' : \$val);
+            if (preg_match(\$pattern, \$content)) {
+                \$content = preg_replace(\$pattern, \$replacement, \$content, 1);
+            } else {
+                \$content .= \"\n\" . \$replacement;
+            }
+            file_put_contents(\$file, \$content);
+        "
+    else
+        echo "${key}=${value}" >> "$env_file"
+    fi
+}
 
-APP_NAME_INPUT="${APP_NAME_INPUT:-Osoul Academy}"
+# ------------------------------------------------------------------------------
+# Step 1: Configuration & Input Validation
+# ------------------------------------------------------------------------------
+log_step 1 "Configuration & Input Validation"
+
+# Validation Regex Patterns
+HOSTNAME_REGEX='^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
+MYSQL_IDENTIFIER_REGEX='^[a-zA-Z0-9_]{1,64}$'
+
+# 1.1 DOMAIN_NAME Validation
+RAW_DOMAIN="${DOMAIN_NAME:-}"
+# Normalize domain (remove http://, https://, trailing slashes, path parts, whitespace)
+CLEAN_DOMAIN=$(echo "$RAW_DOMAIN" | sed -e 's|^https\?://||i' -e 's|/.*$||' -e 's|[[:space:]]||g' | tr -d '\r\n')
+
+if [ -n "$CLEAN_DOMAIN" ] && [[ "$CLEAN_DOMAIN" =~ $HOSTNAME_REGEX ]] && [[ ! "$CLEAN_DOMAIN" =~ [\$\{\}\=\;] ]]; then
+    DOMAIN_NAME="$CLEAN_DOMAIN"
+else
+    if [ -n "$RAW_DOMAIN" ] && [ "$RAW_DOMAIN" != "osoul-academy.com" ]; then
+        echo -e "${YELLOW}⚠️  Warning: Supplied DOMAIN_NAME ('${RAW_DOMAIN}') is invalid. Falling back to 'osoul-academy.com'.${NC}"
+    fi
+    DOMAIN_NAME="osoul-academy.com"
+fi
+
+# 1.2 DB_NAME Validation
+RAW_DB_NAME="${DB_NAME:-}"
+if [[ "$RAW_DB_NAME" =~ $MYSQL_IDENTIFIER_REGEX ]] && [[ ! "$RAW_DB_NAME" =~ [\$\{\}\=\;] ]]; then
+    DB_NAME="$RAW_DB_NAME"
+else
+    if [ -n "$RAW_DB_NAME" ] && [ "$RAW_DB_NAME" != "osoul_academy" ]; then
+        echo -e "${YELLOW}⚠️  Warning: Supplied DB_NAME ('${RAW_DB_NAME}') is invalid. Falling back to 'osoul_academy'.${NC}"
+    fi
+    DB_NAME="osoul_academy"
+fi
+
+# 1.3 DB_USER Validation
+RAW_DB_USER="${DB_USER:-}"
+if [[ "$RAW_DB_USER" =~ $MYSQL_IDENTIFIER_REGEX ]] && [[ ! "$RAW_DB_USER" =~ [\$\{\}\=\;] ]]; then
+    DB_USER="$RAW_DB_USER"
+else
+    if [ -n "$RAW_DB_USER" ] && [ "$RAW_DB_USER" != "osoul_user" ]; then
+        echo -e "${YELLOW}⚠️  Warning: Supplied DB_USER ('${RAW_DB_USER}') is invalid. Falling back to 'osoul_user'.${NC}"
+    fi
+    DB_USER="osoul_user"
+fi
+
+# 1.4 DB_PASS Validation
+RAW_DB_PASS="${DB_PASS:-}"
+if [ -n "$RAW_DB_PASS" ] && [[ ! "$RAW_DB_PASS" =~ [\$\{\}\;\'\"\`\\] ]] && [ ${#RAW_DB_PASS} -ge 8 ]; then
+    DB_PASS="$RAW_DB_PASS"
+else
+    # Generate cryptographically secure random hexadecimal password
+    DB_PASS=$(openssl rand -hex 24)
+fi
+
+# 1.5 APP_NAME & Directory Setup
+RAW_APP_NAME="${APP_NAME:-${APP_NAME_INPUT:-}}"
+if [ -n "$RAW_APP_NAME" ] && [[ ! "$RAW_APP_NAME" =~ [\$\{\}\;] ]]; then
+    APP_NAME_VAL="$RAW_APP_NAME"
+else
+    APP_NAME_VAL="Osoul Academy"
+fi
 
 INSTALL_DIR="/var/www/osoul-academy"
 REPO_URL="https://github.com/MohamedFahmyy/osoul-academy-new.git"
+PHP_REQUIRED_VER="8.3"
 
-echo -e "${GREEN}Configuration:${NC}"
-echo "----------------------------------------"
-echo "Domain:      $DOMAIN_NAME"
-echo "Install Dir: $INSTALL_DIR"
-echo "Database:    $DB_NAME"
-echo "DB User:     $DB_USER"
-echo "DB Password: $DB_PASS"
-echo "App Name:    $APP_NAME_INPUT"
-echo "----------------------------------------"
-echo -e "${GREEN}Starting installation...${NC}"
+# 1.6 Admin User Setup
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@osoul-academy.com}"
+if [[ ! "$ADMIN_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+    ADMIN_EMAIL="admin@osoul-academy.com"
+fi
 
-# 2. System Update & Dependencies Installation
-echo -e "\n${YELLOW}📦 Step 2: Installing Server Packages (Nginx, PHP 8.3, MySQL, Node.js 20, Composer)...${NC}"
+RAW_ADMIN_PASS="${ADMIN_PASS:-}"
+if [ -n "$RAW_ADMIN_PASS" ] && [[ ! "$RAW_ADMIN_PASS" =~ [\$\{\}\;\'\"\`\\] ]] && [ ${#RAW_ADMIN_PASS} -ge 8 ]; then
+    ADMIN_PASS="$RAW_ADMIN_PASS"
+else
+    ADMIN_PASS=$(openssl rand -hex 12)
+fi
+
+# Display Sanitized Safe Summary (NEVER PRINT DATABASE PASSWORD)
+echo -e "${GREEN}Configuration Summary:${NC}"
+echo "----------------------------------------------------"
+echo "Domain:          ${DOMAIN_NAME}"
+echo "Install Dir:     ${INSTALL_DIR}"
+echo "Database:        ${DB_NAME}"
+echo "DB User:         ${DB_USER}"
+echo "DB Password:     ******** (will be stored in .env)"
+echo "App Name:        ${APP_NAME_VAL}"
+echo "Admin Email:     ${ADMIN_EMAIL}"
+echo "----------------------------------------------------"
+
+# ------------------------------------------------------------------------------
+# Step 2: Operating System Detection
+# ------------------------------------------------------------------------------
+log_step 2 "Operating System Detection"
+
+if [ ! -f /etc/os-release ]; then
+    echo -e "${RED}❌ Error: Cannot detect operating system (/etc/os-release not found).${NC}"
+    exit 1
+fi
+
+. /etc/os-release
+OS_ID="${ID:-}"
+OS_VERSION_ID="${VERSION_ID:-}"
+OS_CODENAME="${VERSION_CODENAME:-}"
+
+echo "Detected OS: ${NAME:-Linux} ${VERSION_ID:-} (${OS_CODENAME})"
+
+SUPPORTED=false
+if [ "$OS_ID" = "ubuntu" ]; then
+    if [[ "$OS_VERSION_ID" == "22.04"* ]] || [[ "$OS_VERSION_ID" == "24.04"* ]]; then
+        SUPPORTED=true
+    fi
+elif [ "$OS_ID" = "debian" ]; then
+    if [[ "$OS_VERSION_ID" == "11"* ]] || [[ "$OS_VERSION_ID" == "12"* ]]; then
+        SUPPORTED=true
+    fi
+fi
+
+if [ "$SUPPORTED" = false ]; then
+    echo -e "${RED}❌ Unsupported operating system.${NC}"
+    echo -e "Detected:  ${OS_ID} ${OS_VERSION_ID}"
+    echo -e "Supported: Ubuntu 22.04 / 24.04 LTS, Debian 11 / 12"
+    exit 1
+fi
+echo -e "${GREEN}✓ OS check passed.${NC}"
+
+# ------------------------------------------------------------------------------
+# Step 3: Package Repositories & Dependencies Installation
+# ------------------------------------------------------------------------------
+log_step 3 "Installing System Dependencies & PHP ${PHP_REQUIRED_VER}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y software-properties-common curl wget git unzip zip ufw
+apt-get install -y --no-install-recommends \
+    software-properties-common curl wget git unzip zip ufw \
+    lsb-release ca-certificates apt-transport-https gnupg2 dnsutils
 
-# Add PHP Repository
-add-apt-repository -y ppa:ondrej/php || true
-apt-get update -y
+# Configure PHP Repository based on OS
+if [ "$OS_ID" = "ubuntu" ]; then
+    add-apt-repository -y ppa:ondrej/php
+    apt-get update -y
+elif [ "$OS_ID" = "debian" ]; then
+    curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
+    echo "deb https://packages.sury.org/php/ ${OS_CODENAME} main" > /etc/apt/sources.list.d/php.list
+    apt-get update -y
+fi
 
-# Install PHP 8.3 & Extensions
-apt-get install -y php8.3 php8.3-fpm php8.3-mysql php8.3-mbstring php8.3-xml \
-    php8.3-bcmath php8.3-curl php8.3-zip php8.3-gd php8.3-intl php8.3-cli \
-    php8.3-soap php8.3-tokenizer
+# Install PHP 8.3 & Required Laravel Extensions
+apt-get install -y \
+    "php${PHP_REQUIRED_VER}" \
+    "php${PHP_REQUIRED_VER}-fpm" \
+    "php${PHP_REQUIRED_VER}-cli" \
+    "php${PHP_REQUIRED_VER}-mysql" \
+    "php${PHP_REQUIRED_VER}-mbstring" \
+    "php${PHP_REQUIRED_VER}-xml" \
+    "php${PHP_REQUIRED_VER}-bcmath" \
+    "php${PHP_REQUIRED_VER}-curl" \
+    "php${PHP_REQUIRED_VER}-zip" \
+    "php${PHP_REQUIRED_VER}-gd" \
+    "php${PHP_REQUIRED_VER}-intl" \
+    "php${PHP_REQUIRED_VER}-tokenizer" \
+    "php${PHP_REQUIRED_VER}-soap"
 
 # Install Composer
 if ! command -v composer &> /dev/null; then
+    echo "Installing Composer..."
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 fi
 
 # Install Node.js 20.x and NPM
 if ! command -v node &> /dev/null; then
+    echo "Installing Node.js 20.x..."
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
 fi
 
-# Install Nginx and MySQL Server
+# Install Nginx, MySQL Server, Certbot
 apt-get install -y nginx mysql-server certbot python3-certbot-nginx
 
-# Start and enable services
-systemctl enable nginx --now
-systemctl enable mysql --now
-systemctl enable php8.3-fpm --now
+# Determine actual installed PHP version and PHP-FPM service name
+INSTALLED_PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+PHP_FPM_SERVICE="php${INSTALLED_PHP_VER}-fpm"
 
-# 3. Create MySQL Database and User
-echo -e "\n${YELLOW}🗄️ Step 3: Setting up MySQL Database and User...${NC}"
+echo "Detected PHP Version: ${INSTALLED_PHP_VER}"
+echo "Detected PHP-FPM Service: ${PHP_FPM_SERVICE}"
 
-mysql -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-mysql -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
-mysql -e "FLUSH PRIVILEGES;"
+# Enable and start core services
+systemctl enable --now nginx
+systemctl enable --now mysql
+systemctl enable --now "$PHP_FPM_SERVICE"
 
-echo -e "${GREEN}✓ Database '${DB_NAME}' and user '${DB_USER}' created successfully.${NC}"
+# ------------------------------------------------------------------------------
+# Step 4: MySQL Database & User Setup
+# ------------------------------------------------------------------------------
+log_step 4 "Setting up MySQL Database and User"
 
-# 4. Clone Repository
-echo -e "\n${YELLOW}📥 Step 4: Cloning Repository from GitHub...${NC}"
+# Idempotently create database and user using safe heredoc
+mysql -u root <<EOF
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+
+echo -e "${GREEN}✓ Database '${DB_NAME}' and user '${DB_USER}' ready.${NC}"
+
+# ------------------------------------------------------------------------------
+# Step 5: Repository Installation
+# ------------------------------------------------------------------------------
+log_step 5 "Cloning Application Repository"
 
 if [ -d "$INSTALL_DIR" ]; then
-    echo -e "${YELLOW}Directory $INSTALL_DIR exists. Backing up to ${INSTALL_DIR}_backup_$(date +%s)...${NC}"
-    mv "$INSTALL_DIR" "${INSTALL_DIR}_backup_$(date +%s)"
+    BACKUP_DIR="${INSTALL_DIR}_backup_$(date +%Y%m%d_%H%M%S)"
+    echo -e "${YELLOW}Target directory $INSTALL_DIR exists. Backing up to ${BACKUP_DIR}...${NC}"
+    mv "$INSTALL_DIR" "$BACKUP_DIR"
 fi
 
 git clone "$REPO_URL" "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# 5. Configure .env File
-echo -e "\n${YELLOW}⚙️ Step 5: Configuring Environment File (.env)...${NC}"
+# ------------------------------------------------------------------------------
+# Step 6: Environment Configuration (.env)
+# ------------------------------------------------------------------------------
+log_step 6 "Configuring Laravel Environment (.env)"
+
+if [ ! -f .env.example ]; then
+    echo -e "${RED}❌ Error: .env.example not found in repository.${NC}"
+    exit 1
+fi
 
 cp .env.example .env
 
-# Replace variables in .env
-sed -i "s|^APP_NAME=.*|APP_NAME=\"${APP_NAME_INPUT}\"|" .env
-sed -i "s|^APP_ENV=.*|APP_ENV=production|" .env
-sed -i "s|^APP_DEBUG=.*|APP_DEBUG=false|" .env
-sed -i "s|^APP_URL=.*|APP_URL=https://${DOMAIN_NAME}|" .env
-sed -i "s|^DB_DATABASE=.*|DB_DATABASE=${DB_NAME}|" .env
-sed -i "s|^DB_USERNAME=.*|DB_USERNAME=${DB_USER}|" .env
-sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=\"${DB_PASS}\"|" .env
-sed -i "s|^MENTOR_INSTALLED=.*|MENTOR_INSTALLED=true|" .env
-if ! grep -q "MENTOR_INSTALLED" .env; then
-    echo "MENTOR_INSTALLED=true" >> .env
-fi
+set_env_value ".env" "APP_NAME" "${APP_NAME_VAL}"
+set_env_value ".env" "APP_ENV" "production"
+set_env_value ".env" "APP_DEBUG" "false"
+set_env_value ".env" "APP_URL" "https://${DOMAIN_NAME}"
+set_env_value ".env" "DB_CONNECTION" "mysql"
+set_env_value ".env" "DB_HOST" "127.0.0.1"
+set_env_value ".env" "DB_PORT" "3306"
+set_env_value ".env" "DB_DATABASE" "${DB_NAME}"
+set_env_value ".env" "DB_USERNAME" "${DB_USER}"
+set_env_value ".env" "DB_PASSWORD" "${DB_PASS}"
+set_env_value ".env" "MENTOR_INSTALLED" "true"
 
-# 6. Install Composer Dependencies
-echo -e "\n${YELLOW}📦 Step 6: Installing Composer Packages...${NC}"
+chmod 600 .env
+echo -e "${GREEN}✓ .env configured securely (permissions 600).${NC}"
+
+# ------------------------------------------------------------------------------
+# Step 7: Composer Dependencies & Key Generation
+# ------------------------------------------------------------------------------
+log_step 7 "Installing Composer Dependencies (Production Mode)"
+
 composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
-# Generate App Key
-php artisan key:generate --force
+if ! grep -qE '^APP_KEY=base64:.+' .env; then
+    echo "Generating Application Key..."
+    php artisan key:generate --force
+fi
 
-# 7. Install NPM Dependencies & Build Assets
-echo -e "\n${YELLOW}🎨 Step 7: Compiling Frontend Assets (Vite)...${NC}"
+# ------------------------------------------------------------------------------
+# Step 8: Frontend Build (Vite & Tailwind v4)
+# ------------------------------------------------------------------------------
+log_step 8 "Compiling Frontend Assets"
+
 if [ -f package-lock.json ]; then
     npm ci
 else
     npm install
 fi
+
 npm run build
 
-# 8. Run Database Migrations and Seeders
-echo -e "\n${YELLOW}🗄️ Step 8: Running Database Migrations & Seeders...${NC}"
-php artisan migrate --force --seed
+if [ ! -f public/build/manifest.json ]; then
+    echo -e "${RED}❌ Error: Frontend build failed: public/build/manifest.json not found.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Frontend assets compiled successfully.${NC}"
 
-# 9. Storage Link and Permissions
-echo -e "\n${YELLOW}🔒 Step 9: Setting File Permissions and Storage Link...${NC}"
+# ------------------------------------------------------------------------------
+# Step 9: Database Migration & Initial Seeding
+# ------------------------------------------------------------------------------
+log_step 9 "Running Database Migrations & Initial Seeders"
+
+php artisan migrate --force
+php artisan db:seed --force
+
+# Ensure public installed flag file exists for Installer module middleware
+mkdir -p storage/app/public
+touch storage/app/public/installed
+
+# Create or Update Administrator Account
+php artisan tinker --execute="
+    \$admin = \App\Models\User::updateOrCreate(
+        ['email' => '${ADMIN_EMAIL}'],
+        [
+            'name' => 'Administrator',
+            'role' => 'admin',
+            'status' => 1,
+            'password' => \Illuminate\Support\Facades\Hash::make('${ADMIN_PASS}'),
+            'email_verified_at' => now(),
+        ]
+    );
+    \$instructor = \App\Models\Instructor::updateOrCreate(
+        ['user_id' => \$admin->id],
+        [
+            'status' => 'approved',
+            'designation' => 'Administrator',
+            'skills' => json_encode(['admin']),
+            'biography' => 'Platform Administrator',
+        ]
+    );
+    \$admin->instructor_id = \$instructor->id;
+    \$admin->save();
+"
+
+echo -e "${GREEN}✓ Migrations, seeders, and Admin account initialized.${NC}"
+
+# ------------------------------------------------------------------------------
+# Step 10: Permissions & Storage Symlink
+# ------------------------------------------------------------------------------
+log_step 10 "Configuring Permissions and Storage Symlink"
+
 php artisan storage:link || true
-chown -R www-data:www-data "$INSTALL_DIR"
-chmod -R 775 "$INSTALL_DIR/storage" "$INSTALL_DIR/bootstrap/cache"
 
-# 10. Cache Application Config
-echo -e "\n${YELLOW}⚡ Step 10: Optimizing Cache...${NC}"
+# Sane permission model: files 644, directories 755, storage/bootstrap writable by www-data
+DEPLOY_USER="${SUDO_USER:-root}"
+chown -R "${DEPLOY_USER}:www-data" "$INSTALL_DIR"
+
+find "$INSTALL_DIR" -type d -exec chmod 755 {} +
+find "$INSTALL_DIR" -type f -exec chmod 644 {} +
+
+chown -R www-data:www-data "$INSTALL_DIR/storage" "$INSTALL_DIR/bootstrap/cache"
+chmod -R 775 "$INSTALL_DIR/storage" "$INSTALL_DIR/bootstrap/cache"
+chmod 600 "$INSTALL_DIR/.env"
+
+chmod +x "$INSTALL_DIR/deploy.sh" || true
+chmod +x "$INSTALL_DIR/setup-production.sh" || true
+chmod +x "$INSTALL_DIR/install-server.sh" || true
+
+# ------------------------------------------------------------------------------
+# Step 11: Application Cache Optimization
+# ------------------------------------------------------------------------------
+log_step 11 "Optimizing Laravel Caches"
+
 php artisan optimize:clear
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache
 php artisan event:cache
 
-# 11. Configure Nginx
-echo -e "\n${YELLOW}🌐 Step 11: Configuring Nginx...${NC}"
+# ------------------------------------------------------------------------------
+# Step 12: Nginx Web Server Configuration
+# ------------------------------------------------------------------------------
+log_step 12 "Configuring Nginx"
+
+# Resolve PHP-FPM socket path dynamically
+PHP_FPM_SOCK=""
+if [ -S "/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
+    PHP_FPM_SOCK="unix:/var/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
+elif [ -S "/run/php/php${INSTALLED_PHP_VER}-fpm.sock" ]; then
+    PHP_FPM_SOCK="unix:/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
+else
+    PHP_FPM_SOCK="unix:/run/php/php${INSTALLED_PHP_VER}-fpm.sock"
+fi
 
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN_NAME"
 
@@ -177,11 +474,16 @@ server {
 
     add_header X-Frame-Options "SAMEORIGIN";
     add_header X-Content-Type-Options "nosniff";
+    add_header X-XSS-Protection "1; mode=block";
+    add_header Referrer-Policy "strict-origin-when-cross-origin";
 
     index index.php index.html;
 
     charset utf-8;
     client_max_body_size 500M;
+
+    access_log /var/log/nginx/${DOMAIN_NAME}_access.log;
+    error_log  /var/log/nginx/${DOMAIN_NAME}_error.log error;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
@@ -193,43 +495,105 @@ server {
     error_page 404 /index.php;
 
     location ~ \.php\$ {
-        fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
+        fastcgi_pass $PHP_FPM_SOCK;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
         fastcgi_hide_header X-Powered-By;
+        fastcgi_read_timeout 300;
     }
 
+    # Deny access to sensitive files and hidden files
     location ~ /\.(?!well-known).* {
+        deny all;
+    }
+
+    location ~ ^/(\.env|\.git|storage/logs|vendor) {
         deny all;
     }
 }
 EOF
 
 ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN_NAME"
-# Remove default site if exists
 rm -f /etc/nginx/sites-enabled/default
 
 nginx -t
 systemctl reload nginx
 
-# 12. Make executable
-chmod +x "$INSTALL_DIR/deploy.sh"
-chmod +x "$INSTALL_DIR/setup-production.sh"
+# ------------------------------------------------------------------------------
+# Step 13: Firewall & SSL Verification
+# ------------------------------------------------------------------------------
+log_step 13 "Checking Firewall and SSL Readiness"
 
+if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
+    echo "Configuring UFW firewall rules..."
+    ufw allow 22/tcp || true
+    ufw allow 80/tcp || true
+    ufw allow 443/tcp || true
+fi
+
+# Check DNS resolution
+SERVER_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || echo "")
+RESOLVED_IP=$(getent ahosts "$DOMAIN_NAME" | head -n 1 | awk '{print $1}' || echo "")
+
+SSL_STATUS="Pending DNS configuration"
+if [ -n "$SERVER_IP" ] && [ -n "$RESOLVED_IP" ] && [ "$SERVER_IP" = "$RESOLVED_IP" ]; then
+    echo "DNS resolves to this server ($SERVER_IP). Attempting automatic SSL certificate installation..."
+    if certbot --nginx -d "$DOMAIN_NAME" -d "www.$DOMAIN_NAME" --non-interactive --agree-tos -m "$ADMIN_EMAIL" --redirect; then
+        SSL_STATUS="Enabled (Let's Encrypt)"
+    else
+        echo -e "${YELLOW}⚠️  Certbot SSL setup encountered an issue. You can run certbot manually once DNS propagates.${NC}"
+    fi
+else
+    echo "DNS for $DOMAIN_NAME is not pointing to this server IP ($SERVER_IP) yet. SSL setup deferred."
+fi
+
+# ------------------------------------------------------------------------------
+# Step 14: Final Verification
+# ------------------------------------------------------------------------------
+log_step 14 "Final Verification"
+
+echo "Verifying installed components:"
+php -v | head -n 1
+composer --version | head -n 1
+node -v | sed 's/^/Node.js /'
+npm -v | sed 's/^/NPM /'
+mysql -V
+nginx -v
+
+systemctl is-active --quiet nginx && echo -e "${GREEN}✓ Nginx service is running.${NC}"
+systemctl is-active --quiet mysql && echo -e "${GREEN}✓ MySQL service is running.${NC}"
+systemctl is-active --quiet "$PHP_FPM_SERVICE" && echo -e "${GREEN}✓ PHP-FPM service is running.${NC}"
+
+# Test Laravel application boot
+php artisan about > /dev/null
+echo -e "${GREEN}✓ Laravel application booted successfully.${NC}"
+
+# ------------------------------------------------------------------------------
+# Installation Complete Summary
+# ------------------------------------------------------------------------------
 echo -e "\n${GREEN}==============================================================================${NC}"
-echo -e "${GREEN}🎉 Production Installation Complete!${NC}"
+echo -e "${GREEN}${BOLD}🎉 Osoul Academy Production Installation Complete!${NC}"
 echo -e "${GREEN}==============================================================================${NC}"
-echo -e "Your application is live at: ${BLUE}http://${DOMAIN_NAME}${NC}"
-echo -e "\n${YELLOW}🔑 Database Details Saved:${NC}"
-echo -e "  Database: ${GREEN}${DB_NAME}${NC}"
-echo -e "  User:     ${GREEN}${DB_USER}${NC}"
-echo -e "  Password: ${GREEN}${DB_PASS}${NC}"
-echo -e "\n${YELLOW}🔒 Admin Login Details:${NC}"
-echo -e "  URL:      ${BLUE}http://${DOMAIN_NAME}/login${NC}"
-echo -e "  Email:    ${GREEN}admin@asap.com${NC} or ${GREEN}admin@example.com${NC}"
-echo -e "  Password: ${GREEN}password${NC}"
-echo -e "\n${YELLOW}📜 To install free SSL (HTTPS), run:${NC}"
-echo -e "  ${BLUE}sudo certbot --nginx -d ${DOMAIN_NAME} -d www.${DOMAIN_NAME}${NC}"
-echo -e "\n${YELLOW}🔄 For future code updates, run:${NC}"
-echo -e "  ${BLUE}cd ${INSTALL_DIR} && ./deploy.sh${NC}"
+echo -e "Application URL:     ${CYAN}https://${DOMAIN_NAME}${NC} (or http://${DOMAIN_NAME})"
+echo -e "Install Directory:   ${INSTALL_DIR}"
+echo -e "Database Name:       ${DB_NAME}"
+echo -e "Database User:       ${DB_USER}"
+echo -e "Database Password:   Stored securely in ${INSTALL_DIR}/.env (permissions 600)"
+echo -e "Environment:         production"
+echo -e "Debug Mode:          disabled"
+echo -e "SSL Status:          ${SSL_STATUS}"
+echo -e "------------------------------------------------------------------------------"
+echo -e "${BOLD}🔑 Admin Login Credentials:${NC}"
+echo -e "  Login URL:         ${CYAN}https://${DOMAIN_NAME}/login${NC}"
+echo -e "  Admin Email:       ${BOLD}${ADMIN_EMAIL}${NC}"
+echo -e "  Admin Password:    ${BOLD}${ADMIN_PASS}${NC}"
+echo -e "------------------------------------------------------------------------------"
+echo -e "${YELLOW}📌 Next Steps:${NC}"
+if [ "$SSL_STATUS" != "Enabled (Let's Encrypt)" ]; then
+    echo -e "1. Ensure DNS A records for ${DOMAIN_NAME} and www.${DOMAIN_NAME} point to ${SERVER_IP:-your-server-ip}"
+    echo -e "2. Once DNS is pointed, issue free SSL (HTTPS):"
+    echo -e "   ${CYAN}sudo certbot --nginx -d ${DOMAIN_NAME} -d www.${DOMAIN_NAME}${NC}"
+fi
+echo -e "3. To deploy future updates with one command:"
+echo -e "   ${CYAN}cd ${INSTALL_DIR} && ./deploy.sh${NC}"
 echo -e "${GREEN}==============================================================================${NC}"
