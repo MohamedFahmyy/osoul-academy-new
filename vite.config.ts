@@ -33,10 +33,6 @@ export default defineConfig({
       tsconfigPaths: true,
       alias: createModuleViteAliases(),
    },
-   esbuild: {
-      drop:
-         process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
-   } as any,
    build: {
       cssCodeSplit: true,
       minify: true,

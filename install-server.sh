@@ -324,10 +324,15 @@ if ! command -v composer &> /dev/null; then
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 fi
 
-# Install Node.js and NPM
-if ! command -v node &> /dev/null; then
-    echo "Installing Node.js..."
-    if curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; then
+# Install / Upgrade Node.js (Node 22 LTS required for frontend dependencies)
+NODE_MAJOR=0
+if command -v node &> /dev/null; then
+    NODE_MAJOR=$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || echo 0)
+fi
+
+if [ "$NODE_MAJOR" -lt 22 ]; then
+    echo "Installing/Upgrading Node.js to 22.x LTS..."
+    if curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; then
         apt-get install -y nodejs || true
     fi
     if ! command -v node &> /dev/null; then
