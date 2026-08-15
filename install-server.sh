@@ -96,6 +96,52 @@ set_env_value() {
     fi
 }
 
+cleanup_stale_repositories() {
+    local os_id="$1"
+    local os_ver="$2"
+
+    if [ "$os_id" = "ubuntu" ] && [[ "$os_ver" == "26.04"* ]]; then
+        local found_stale=false
+
+        # Inspect and clean stale files in /etc/apt/sources.list.d/
+        if [ -d /etc/apt/sources.list.d ]; then
+            for src_file in /etc/apt/sources.list.d/*; do
+                [ -e "$src_file" ] || continue
+                if grep -qiE "ppa\.launchpadcontent\.net/ondrej/php|ppa\.launchpad\.net/ondrej/php|ondrej/php" "$src_file" 2>/dev/null; then
+                    if [ "$found_stale" = false ]; then
+                        echo -e "\n${YELLOW}⚠️  Found stale Ondřej PHP PPA configured for Ubuntu 26.04.${NC}"
+                        echo -e "${YELLOW}   Ubuntu 26.04 uses the native PHP 8.5 repository.${NC}"
+                        echo -e "${YELLOW}   Removing the incompatible PPA before continuing.${NC}"
+                        found_stale=true
+                    fi
+                    echo "Removing incompatible PPA file: $src_file"
+                    rm -f "$src_file"
+                fi
+            done
+        fi
+
+        # Inspect and clean /etc/apt/sources.list
+        if [ -f /etc/apt/sources.list ] && grep -qiE "ppa\.launchpadcontent\.net/ondrej/php|ppa\.launchpad\.net/ondrej/php|ondrej/php" /etc/apt/sources.list 2>/dev/null; then
+            if [ "$found_stale" = false ]; then
+                echo -e "\n${YELLOW}⚠️  Found stale Ondřej PHP PPA in /etc/apt/sources.list for Ubuntu 26.04.${NC}"
+                echo -e "${YELLOW}   Removing the incompatible entries before continuing.${NC}"
+                found_stale=true
+            fi
+            sed -i -E '/ppa\.launchpad(content)?\.net\/ondrej\/php/d' /etc/apt/sources.list
+            sed -i -E '/ondrej\/php/d' /etc/apt/sources.list
+        fi
+
+        # Inspect and clean Deb822 format file if present
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ] && grep -qiE "ondrej/php" /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null; then
+            sed -i -E '/ondrej\/php/d' /etc/apt/sources.list.d/ubuntu.sources
+        fi
+
+        if [ "$found_stale" = true ]; then
+            echo -e "${GREEN}✓ Stale Ondřej PHP PPA cleaned successfully.${NC}"
+        fi
+    fi
+}
+
 # ------------------------------------------------------------------------------
 # Step 1: Configuration & Input Validation
 # ------------------------------------------------------------------------------
@@ -223,6 +269,9 @@ fi
 
 echo -e "${GREEN}✓ Supported OS: ${OS_PRETTY}${NC}"
 echo -e "PHP Strategy:   ${PHP_STRATEGY}"
+
+# Preflight repository check & cleanup
+cleanup_stale_repositories "$OS_ID" "$OS_VERSION_ID"
 
 # ------------------------------------------------------------------------------
 # Step 3: Package Repositories & Dependencies Installation
