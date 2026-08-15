@@ -25,45 +25,25 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# 1. Interactive or Automated Inputs (Domain & Database Setup)
+# 1. Configuration (Domain & Database Setup)
 echo -e "\n${YELLOW}📋 Step 1: Configuration Details${NC}"
 
-# Function to safely prompt for input even when piped via curl | bash
-prompt_input() {
-    local prompt_msg="$1"
-    local default_val="$2"
-    local var_name="$3"
-    local input_val=""
-
-    if [ -t 0 ]; then
-        read -rp "$prompt_msg" input_val
-    elif [ -c /dev/tty ]; then
-        read -rp "$prompt_msg" input_val </dev/tty
-    else
-        input_val=""
-    fi
-
-    input_val=${input_val:-$default_val}
-    eval "$var_name=\"$input_val\""
-}
-
-prompt_input "Enter your Domain Name [default: osoul-academy.com]: " "osoul-academy.com" DOMAIN_NAME
-# Sanitize domain name (remove http://, https://, trailing slashes)
+DOMAIN_NAME="${DOMAIN_NAME:-osoul-academy.com}"
 DOMAIN_NAME=$(echo "$DOMAIN_NAME" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||' -e 's|/.*$||' | tr -d ' ')
 
-prompt_input "Enter Database Name [default: osoul_academy]: " "osoul_academy" DB_NAME
-prompt_input "Enter Database User [default: osoul_user]: " "osoul_user" DB_USER
+DB_NAME="${DB_NAME:-osoul_academy}"
+DB_USER="${DB_USER:-osoul_user}"
 
 # Generate random secure password if not provided
 RANDOM_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-prompt_input "Enter Database Password [default: $RANDOM_PASS]: " "$RANDOM_PASS" DB_PASS
+DB_PASS="${DB_PASS:-$RANDOM_PASS}"
 
-prompt_input "Enter App Name [default: Osoul Academy]: " "Osoul Academy" APP_NAME_INPUT
+APP_NAME_INPUT="${APP_NAME_INPUT:-Osoul Academy}"
 
 INSTALL_DIR="/var/www/osoul-academy"
 REPO_URL="https://github.com/MohamedFahmyy/osoul-academy-new.git"
 
-echo -e "\n${GREEN}Summary:${NC}"
+echo -e "${GREEN}Configuration:${NC}"
 echo "----------------------------------------"
 echo "Domain:      $DOMAIN_NAME"
 echo "Install Dir: $INSTALL_DIR"
@@ -72,12 +52,7 @@ echo "DB User:     $DB_USER"
 echo "DB Password: $DB_PASS"
 echo "App Name:    $APP_NAME_INPUT"
 echo "----------------------------------------"
-
-prompt_input "Proceed with installation? (y/n) [default: y]: " "y" CONFIRM
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo -e "${RED}Installation aborted.${NC}"
-    exit 0
-fi
+echo -e "${GREEN}Starting installation...${NC}"
 
 # 2. System Update & Dependencies Installation
 echo -e "\n${YELLOW}📦 Step 2: Installing Server Packages (Nginx, PHP 8.3, MySQL, Node.js 20, Composer)...${NC}"
